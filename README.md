@@ -17,7 +17,7 @@ RC chair
 * esp32 -> DOIT ESP32 DEVKIT V1
 
 ## Modify a code
-* Add password.h file with the following context, and modify a password accordingly.
+* Add password.h file with the following content, and modify a password accordingly.
 ```
 const char* password = "password";
 ```
