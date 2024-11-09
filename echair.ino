@@ -1,157 +1,150 @@
-#include <VescUart.h>
+#include <Arduino.h>
 
-/*
- * 1600 RPM max is 15mph
- * ERPM = Npoles * RPM / 2;
- * Npoles = 30?
- * Max idle ERPMS observed 9200
- */
-//#define RPM_INPUT
-#define ZERO_THRESHOLD 40
 
-#ifdef RPM_INPUT /* RPM input */
-#define FORWARD_MAX_ERPMS 6000
-#define BACKWARD_MAX_ERPMS 4000
-#define STEERING_MAX_ERPMS 500
+#define ECHAIR_4x4
+
+#ifdef ECHAIR_4x4
+#define GYRO_ENABLED 0
 #else
-#define FORWARD_MAX_ERPMS 80
-#define BACKWARD_MAX_ERPMS 40
-#define STEERING_MAX_ERPMS 20
+#define GYRO_ENABLED 1
 #endif
 
 
-#define sign(x) ((x > 0) - (x < 0))
-unsigned long time_on_fall[2] = {0};
-unsigned long time_on_raise[2] = {0};
-unsigned int pwm_period[2] = {0};
-unsigned int pwm_durty[2] = {0};
+double actual_direction, target_direction, pid_output, speed;
 
-VescUart UART_LEFT;
-VescUart UART_RIGHT;
+bool stopped = false;
 
-enum {
-  THRO = 0,
-  STR = 1,
-};
+// CAN IDs
+#ifdef ECHAIR_4x4
+#define LF 31
+#define LR 106
+#define RF 110
+#define RR 85
+#else
+#define LF 49
+#define RF 12
+#endif
 
-struct channel {
-  int pin;
-  unsigned long min, mid, max;
-  unsigned long timestamp;
-  unsigned long raw;
-  unsigned long smooth;
-  unsigned long out;
-  /* internal */
-  unsigned long htime;
+#include "common.h"
+#include "led.h"
+#include "vesc.h"
+#include "gyro.h"
+#include "wlan.h"
+#include "ota.h"
+#include "remote.h"
+#include "pid.h"
+#include "web.h"
 
-};
 
-struct channel channels[] = {
-  {20, 1000, 1485, 2000, 0, 0, 0},
-  {21, 1000, 1490, 2000, 0, 0, 0},
-};
+void serial_setup() {
+  // debug
+  Serial.begin(115200);
+  Serial.println("Booting");
+}
 
-void isr(int ch) {
-  unsigned long current_time = micros();
-  struct channel *c = &channels[ch];
-
-  if(digitalRead(c->pin) == HIGH){
-    c->htime = current_time;
-  } else {
-    c->raw = current_time - c->htime;
-    c->timestamp = millis();
+void set_duty(float l, float r) {
+  static float last_l, last_r;
+  if (stopped) {
+    l = r = 0;
   }
+
+  if (l == last_l && r == last_r)
+    return;
+
+  last_l = l;
+  last_r = r;
+
+#ifdef ECHAIR_4x4
+  vesc_set_duty(l, LF);
+  vesc_set_duty(l, LR);
+  vesc_set_duty(r, RF);
+  vesc_set_duty(r, RR);
+#else
+  vesc_set_duty(l, LF);
+  vesc_set_duty(r, RF);
+#endif
+
+#if 0
+  Serial.print("l:"); Serial.print(l);
+  Serial.print(" r:"); Serial.println(r);
+#endif
 }
 
-void isr_thro() {
-  isr(THRO);
-}
-
-void isr_str() {
-  isr(STR);
+void set_current_brake(float c) {
+#ifdef ECHAIR_4x4
+  vesc_set_current_brake(c, LF);
+  vesc_set_current_brake(c, LR);
+  vesc_set_current_brake(c, RF);
+  vesc_set_current_brake(c, RR);
+#else
+  vesc_set_current_brake(c, LF);
+  vesc_set_current_brake(c, RF);
+#endif
 }
 
 void setup() {
-  pinMode(20, INPUT_PULLUP);
-  pinMode(21, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(20), isr_thro, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(21), isr_str, CHANGE);
+  serial_setup();
+  vesc_setup();
+  wifi_setup();
+  webserial_setup();
+  ota_setup();
+  gyro_setup();
+  pid_setup();
+  led_setup();
+  remote_setup();
+}
 
-  Serial.begin(115200);
-  Serial1.begin(115200);
-  Serial2.begin(115200);
-  while (!Serial1) {;}
-  while (!Serial2) {;}
+void stop_all() {
+  if (stopped)
+    return;
+  stopped = true;
+  set_duty(0, 0);
+  set_current_brake(-10);
+  led_off();
+}
 
-  UART_LEFT.setSerialPort(&Serial1);
-  UART_RIGHT.setSerialPort(&Serial2);
-  delay(500);
+void resume_all() {
+  if (!stopped)
+    return;
+  target_direction = actual_direction;
+  pid_output = 0;
+  stopped = false;
+  led_on();  
 }
 
 void loop() {
+  static double t, d, o, s, p;
+  ota_handle();
+  webserial_handle();
+  gyro_get_direction(&actual_direction);
+  remote_handle();
+  pid_handle();
 
-  if (millis() - channels[0].timestamp < 100 && millis() - channels[1].timestamp < 100) {
-    int thr = channels[0].raw;
-    int str = channels[1].raw;
-    Serial.print(thr);
-    Serial.print(" ");  
-    Serial.println(str);  
-
-
- 
-
-    if (thr > channels[0].mid + ZERO_THRESHOLD)
-      thr = map(thr, channels[0].mid + ZERO_THRESHOLD, channels[0].max, 0, FORWARD_MAX_ERPMS);
-    else if (thr >= channels[0].mid - ZERO_THRESHOLD)
-      thr = 0;
-    else
-      thr = map(thr, channels[0].min, channels[0].mid - ZERO_THRESHOLD, -BACKWARD_MAX_ERPMS, 0);
-
-    if (str > channels[1].mid + ZERO_THRESHOLD)
-      str = map(str, channels[1].mid + ZERO_THRESHOLD, channels[1].max, 0, STEERING_MAX_ERPMS);
-    else if (str >= channels[1].mid - ZERO_THRESHOLD)
-      str = 0;
-    else
-      str = map(str, channels[1].min, channels[1].mid - ZERO_THRESHOLD, -STEERING_MAX_ERPMS, 0);
-
-
-    float left = thr + str;
-    float right = thr - str;
-    Serial.print(left);
-    Serial.print(" ");  
-    Serial.println(right);  
-#ifdef RPM_INPUT
-    UART_LEFT.setRPM(left);
-    UART_RIGHT.setRPM(right);
-#else
-//    UART_LEFT.setCurrent(left);
-//    UART_RIGHT.setCurrent(right);
-    UART_LEFT.setDuty((float)left/100);
-    UART_RIGHT.setDuty((float)right/100);
-#endif
-  } else {
-    /* No PPM data. transmitter lost ?*/
-#ifdef RPM_INPUT
-    UART_LEFT.setRPM(0);
-    UART_RIGHT.setRPM(0);
-#else
-//    UART_LEFT.setCurrent(0);
-//    UART_RIGHT.setCurrent(0);
-    UART_LEFT.setDuty(0);
-    UART_RIGHT.setDuty(0);
-    UART_LEFT.setBrakeCurrent(50);
-    UART_RIGHT.setBrakeCurrent(50);
-#endif
+  if (s != speed || p != pid_output) {
+    s = speed;
+    p = pid_output;
+    set_duty((s - p)/100, (s + p)/100);
   }
 
-/*
-  if ( UART_LEFT.getVescValues() && UART_RIGHT.getVescValues()) {
-    Serial.print("RPMS: "); 
-    Serial.print(UART_LEFT.data.rpm);
-    Serial.print(" ");  
-    Serial.println(UART_RIGHT.data.rpm); 
+  static unsigned long debug_event = 0; 
+
+  if (next_event(&debug_event, 100)) {
+//    WebSerial.printf("Target %f, Actual %f, Speed %f, PID %f\n", target_direction, actual_direction, speed, pid_output);
+    Serial.printf("Target %f, Actual %f, Speed %f, PID %f, stopped %d\n", target_direction, actual_direction, speed, pid_output, stopped);
   }
-*/
-  delay(50);
+
+#if 0
+  if (t != target_direction || d != actual_direction || o != pid_output) {
+    t = target_direction;
+    d = actual_direction;
+    o = pid_output;
+  #if 1
+    Serial.print("s:"); Serial.print(speed);
+    Serial.print("t:"); Serial.print(t);
+    Serial.print(",d:"); Serial.print(d);
+    Serial.print(",o:"); Serial.print(o);
+    Serial.println();
+  #endif
+  }
+#endif
 }
-
