@@ -6,7 +6,7 @@
 #ifdef ECHAIR_4x4
 #define GYRO_ENABLED 0
 #else
-#define GYRO_ENABLED 1
+#define GYRO_ENABLED 0
 #endif
 
 
@@ -21,8 +21,8 @@ bool stopped = false;
 #define RF 110
 #define RR 85
 #else
-#define LF 49
-#define RF 12
+#define LF 51
+#define RF 49
 #endif
 
 #include "common.h"
