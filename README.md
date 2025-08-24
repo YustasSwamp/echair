@@ -7,8 +7,8 @@ RC chair
 * esp32 by Espressif Systems, 3.0.7
 
 ## Install Libraries
-* Async TCP by Me-No-Dev, 3.2.12
-* ESP Async WebServer by Me-No-Dev, 3.3.21
+* Async TCP by Me-No-Dev (or ESP32Async), 3.2.12
+* ESP Async WebServer by Me-No-Dev (or ESP32Async ), 3.3.21
 * ESP32-TWAI-CAN by sorek.uk, 1.0.1
 * PID by Brett Beauregard, 1.2.0
 * WebSerial by Ayush Sharma, 2.0.8
